@@ -64,10 +64,7 @@ def show_signal_alert(signal: str, confidence: float, min_conf: float = 70):
         f"""
         <div class="{pulse_class}" style='background-color:{color};
         padding:1.3rem;border-radius:1rem;text-align:center;
-        color:white;font-size:1.6rem;'>
-        <b>{signal}</b><br>
-        Confiança: {confidence:.2f}%
-        </div>
+        color:white;font-size:1.6rem;'>{signal}<br>Confiança: {confidence:.2f}%</div>
         """, unsafe_allow_html=True)
     if confidence >= min_conf:
         if "SUBIDA" in signal:
@@ -102,7 +99,7 @@ def predict_signal(df):
 # ===================== CSS =====================
 st.markdown("""
 <style>
-@keyframes pulse {0% { box-shadow: 0 0 0 0 rgba(0,255,0,0.6);} 70% { box-shadow:0 0 20px 10px rgba(0,255,0,0);} 100% {box-shadow:0 0 0 0 rgba(0,255,0,0);}}
+@keyframes pulse {0% { box-shadow: 0 0 0 0 rgba(0,255,0,0.6);} 70% { box-shadow:0 0 20px 10px rgba(0,255,0,0);} 100% {box-shadow:0 0 0 0 rgba(0,255,0,0);} }
 .pulse-green { animation: pulse 1.5s infinite; }
 .pulse-red { animation: pulse 1.5s infinite; }
 </style>
@@ -113,13 +110,13 @@ st.sidebar.markdown("💰 Preço do Bot: **35 USDT**")
 
 # ===================== LOGIN / REGISTRO =====================
 if "user_id" not in st.session_state:
-    auth_menu = st.selectbox("Escolha:", ["Login", "Criar Conta"])
+    auth_menu = st.selectbox("Escolha:", ["Login", "Criar Conta"], key="auth_menu")
     
     if auth_menu=="Criar Conta":
         st.subheader("📘 Criar Conta")
-        username = st.text_input("Usuário")
-        password = st.text_input("Senha", type="password")
-        if st.button("Registrar"):
+        username = st.text_input("Usuário", key="register_username")
+        password = st.text_input("Senha", type="password", key="register_password")
+        if st.button("Registrar", key="btn_register"):
             result = register_user(username, password)
             if result=="success":
                 st.success("Conta criada! Faça login.")
@@ -130,9 +127,9 @@ if "user_id" not in st.session_state:
     
     elif auth_menu=="Login":
         st.subheader("🔐 Entrar")
-        username = st.text_input("Usuário")
-        password = st.text_input("Senha", type="password")
-        if st.button("Entrar"):
+        username = st.text_input("Usuário", key="login_username")
+        password = st.text_input("Senha", type="password", key="login_password")
+        if st.button("Entrar", key="btn_login"):
             user_data = login_user(username,password)
             if user_data:
                 st.session_state["user_id"] = user_data[0]
@@ -141,10 +138,11 @@ if "user_id" not in st.session_state:
             else:
                 st.error("Usuário ou senha incorretos.")
 
+# ===================== APLICATIVO =====================
 else:
     st.success("✅ Login efetuado com sucesso!")
 
-    # ----------------- BLOQUEIO DE TESTES -----------------
+    # BLOQUEIO DE TESTES
     max_tests = 2
     if st.session_state.get("tests",0) >= max_tests:
         st.error("❌ SEUS TESTES GRATUITOS ACABARAM")
@@ -158,15 +156,13 @@ else:
         """)
         st.stop()
 
-    # ----------------- MENU DE ESCOLHA -----------------
+    # MENU DE ESCOLHA
     st.sidebar.subheader("Escolha o mercado")
-    market_choice = st.selectbox("Mercado:", ["Cripto (BTC/USDT)","Forex (EUR/USDT)"])
-
-    # Mensagem incentivando PRO
+    market_choice = st.selectbox("Mercado:", ["Cripto (BTC/USDT)","Forex (EUR/USDT)"], key="market_choice")
     st.info("⚠️ Para liberar mais criptomoedas e pares Forex, adquira a versão PRO!")
 
-    # ----------------- BOT -----------------
-    if st.button("▶️ Analisar mercado"):
+    # BOT
+    if st.button("▶️ Analisar mercado", key="btn_analyze"):
         # incrementa teste
         st.session_state["tests"] += 1
         cur.execute("UPDATE users SET tests_used=? WHERE id=?",

@@ -1,163 +1,255 @@
-"""
-All-in-One Forex/CFD/Crypto Signal Bot (Streamlit UI)
-Supports data from OANDA (FX, XAU) and Binance (crypto like EUR/USDT, BTC/USDT) if python-binance is installed.
-
-Files: single runnable app. Put your .env with OANDA_TOKEN, OANDA_ACCOUNT, BINANCE_API_KEY, BINANCE_API_SECRET
-Usage: streamlit run all_in_one_streamlit_bot.py
-
-Note: This is a demo scaffold — always test in demo accounts and backtest before using real money.
-"""
-
-import os
-from dotenv import load_dotenv
-load_dotenv()
-
-import time
-import pandas as pd
-import numpy as np
 import streamlit as st
+import pandas as pd
 from datetime import datetime
+import os
 
-# ML / indicators
-import lightgbm as lgb
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import accuracy_score
-from ta.momentum import RSIIndicator
-from ta.trend import MACD
-from ta.volatility import BollingerBands, AverageTrueRange
+# Configuração da página
+st.set_page_config(
+    page_title="⚽ Soccer Striker AI",
+    page_icon="⚽",
+    layout="centered"
+)
 
-# Optional libraries
-try:
-    import oandapyV20
-    import oandapyV20.endpoints.instruments as instruments
-    OANDA_AVAILABLE = True
-except Exception:
-    OANDA_AVAILABLE = False
+# Título
+st.title("⚽ Soccer Striker AI")
+st.caption("Assistente Estatístico de Pênaltis")
 
-try:
-    from binance import Client as BinanceClient
-    BINANCE_AVAILABLE = True
-except Exception:
-    BINANCE_AVAILABLE = False
+# Inicializar estado da sessão
+if 'historico' not in st.session_state:
+    st.session_state.historico = []
+if 'resultado_temp' not in st.session_state:
+    st.session_state.resultado_temp = None
 
-try:
-    import vectorbt as vbt
-    VBT_AVAILABLE = True
-except Exception:
-    VBT_AVAILABLE = False
+# Função para salvar em CSV
+def salvar_csv(historico):
+    df = pd.DataFrame(historico)
+    df.to_csv('historico_penaltis.csv', index=False)
 
-# Credentials
-OANDA_TOKEN = os.getenv("OANDA_TOKEN")
-OANDA_ACCOUNT = os.getenv("OANDA_ACCOUNT")
-BINANCE_KEY = os.getenv("BINANCE_API_KEY")
-BINANCE_SECRET = os.getenv("BINANCE_API_SECRET")
-
-# --------------------- Utility: fetch candles ---------------------
-@st.cache_data(ttl=30)
-def fetch_oanda_candles(pair="EUR_USD", timeframe="M5", count=500):
-    if not OANDA_AVAILABLE or not OANDA_TOKEN:
-        raise RuntimeError("OANDA not available or OANDA_TOKEN missing in .env")
-    api = oandapyV20.API(access_token=OANDA_TOKEN, environment="practice")
-    params = {"granularity": timeframe, "count": count, "price": "M"}
-    r = instruments.InstrumentsCandles(instrument=pair, params=params)
-    api.request(r)
-    rows = []
-    for c in r.response.get("candles", []):
-        if not c.get("complete", False):
-            continue
-        t = pd.to_datetime(c["time"]) 
-        o = float(c["mid"]["o"]) 
-        h = float(c["mid"]["h"]) 
-        l = float(c["mid"]["l"]) 
-        cc = float(c["mid"]["c"]) 
-        rows.append([t, o, h, l, cc])
-    df = pd.DataFrame(rows, columns=["time","open","high","low","close"]).set_index("time")
-    return df
-
-@st.cache_data(ttl=30)
-def fetch_binance_candles(symbol="BTCUSDT", interval='5m', limit=500):
-    if not BINANCE_AVAILABLE or not BINANCE_KEY:
-        raise RuntimeError("Binance client not available or keys missing in .env")
-    client = BinanceClient(BINANCE_KEY, BINANCE_SECRET)
-    klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
-    rows = []
-    for k in klines:
-        t = pd.to_datetime(k[0], unit='ms')
-        o = float(k[1]); h = float(k[2]); l = float(k[3]); c = float(k[4])
-        rows.append([t,o,h,l,c])
-    df = pd.DataFrame(rows, columns=["time","open","high","low","close"]).set_index("time")
-    return df
-
-# --------------------- Feature engineering ---------------------
-def add_features(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df['rsi'] = RSIIndicator(df['close'], window=14).rsi()
-    macd = MACD(df['close'], window_fast=12, window_slow=26, window_sign=9)
-    df['macd'] = macd.macd(); df['macd_signal'] = macd.macd_signal(); df['macd_hist'] = macd.macd_diff()
-    bb = BollingerBands(df['close'], window=20, window_dev=2)
-    df['bb_high'] = bb.bollinger_hband(); df['bb_low'] = bb.bollinger_lband(); df['bb_width'] = df['bb_high'] - df['bb_low']
-    atr = AverageTrueRange(df['high'], df['low'], df['close'], window=14)
-    df['atr'] = atr.average_true_range()
-    df['return_1'] = df['close'].pct_change(1); df['return_5'] = df['close'].pct_change(5); df['return_15'] = df['close'].pct_change(15)
-    df['future_close'] = df['close'].shift(-1)
-    df['target'] = (df['future_close'] > df['close']).astype(int)
-    df.dropna(inplace=True)
-    return df
-
-# --------------------- Model training ---------------------
-def train_lightgbm(df_feat: pd.DataFrame):
-    features = [
-        'rsi','macd','macd_signal','macd_hist','bb_high','bb_low','bb_width','atr','return_1','return_5','return_15'
-    ]
-    X = df_feat[features]; y = df_feat['target']
-    tscv = TimeSeriesSplit(n_splits=5)
-    models = []
-    accs = []
-    for tr, val in tscv.split(X):
-        model = lgb.LGBMClassifier(objective='binary', n_estimators=300)
-        model.fit(X.iloc[tr], y.iloc[tr])
-        preds = model.predict(X.iloc[val])
-        acc = accuracy_score(y.iloc[val], preds)
-        accs.append(acc)
-        models.append(model)
-    return models, np.mean(accs)
-
-# --------------------- Predict / Signal ---------------------
-def predict_signal(models, df_feat):
-    features = ['rsi','macd','macd_signal','macd_hist','bb_high','bb_low','bb_width','atr','return_1','return_5','return_15']
-    X = df_feat[features]
-    probs = np.mean([m.predict_proba(X)[:,1] for m in models], axis=0)
-    df_feat['pred_prob'] = probs
-    last_p = probs[-1]
-    if last_p > 0.6:
-        sig = 'BUY (ALTA)'
-    elif last_p < 0.4:
-        sig = 'SELL (BAIXA)'
+# Função para calcular probabilidades
+def calcular_probabilidades(historico, janela=None):
+    if not historico:
+        return {"⬅️ Esquerda": 0.33, "⬆️ Centro": 0.33, "➡️ Direita": 0.34}
+    
+    if janela:
+        dados = historico[-janela:]
     else:
-        sig = 'NEUTRO'
-    return last_p, sig, df_feat
+        dados = historico
+    
+    direcoes = [h['direcao'] for h in dados]
+    total = len(direcoes)
+    
+    prob_esquerda = direcoes.count("⬅️ Esquerda") / total
+    prob_centro = direcoes.count("⬆️ Centro") / total
+    prob_direita = direcoes.count("➡️ Direita") / total
+    
+    return {
+        "⬅️ Esquerda": prob_esquerda,
+        "⬆️ Centro": prob_centro,
+        "➡️ Direita": prob_direita
+    }
 
-# --------------------- Backtest (optional) ---------------------
-def backtest_vectorbt(df_feat):
-    if not VBT_AVAILABLE:
-        raise RuntimeError('vectorbt not installed')
-    close = df_feat['close']
-    entries = df_feat['pred_prob'] > 0.6
-    exits = df_feat['pred_prob'] < 0.4
-    pf = vbt.Portfolio.from_signals(close, entries, exits, init_cash=1000, fees=0.0004, slippage=0.0002)
-    return pf
+# Função para análise avançada
+def analise_avancada(historico):
+    if len(historico) < 3:
+        return None
+    
+    # Padrões de sequência
+    ultimas_3 = [h['direcao'] for h in historico[-3:]]
+    
+    # Contar repetições
+    repeticoes = 0
+    for i in range(len(historico)-1):
+        if historico[i]['direcao'] == historico[i+1]['direcao']:
+            repeticoes += 1
+    
+    # Alternâncias
+    alternancias = 0
+    for i in range(len(historico)-1):
+        if historico[i]['direcao'] != historico[i+1]['direcao']:
+            alternancias += 1
+    
+    return {
+        "ultimas_3": ultimas_3,
+        "repeticoes": repeticoes,
+        "alternancias": alternancias,
+        "taxa_repeticao": repeticoes / (len(historico)-1) if len(historico) > 1 else 0
+    }
 
-# --------------------- Streamlit UI ---------------------
-st.set_page_config(page_title='Bot Forex/CFD/Crypto — All-in-One', layout='wide')
-st.title('Bot Forex/CFD/Crypto — All-in-One (demo)')
+# Sidebar com controles
+with st.sidebar:
+    st.header("🎮 Controles")
+    
+    # Botão de reiniciar
+    if st.button("🔄 Reiniciar Sessão", type="secondary"):
+        st.session_state.historico = []
+        st.rerun()
+    
+    st.divider()
+    
+    # Configurações de análise
+    st.header("⚙️ Configurações")
+    janela_analise = st.selectbox(
+        "Janela de análise:",
+        ["Todas", "Últimas 20", "Últimas 50", "Últimas 100"],
+        index=0
+    )
+    
+    # Converter seleção para número
+    if janela_analise == "Últimas 20":
+        janela = 20
+    elif janela_analise == "Últimas 50":
+        janela = 50
+    elif janela_analise == "Últimas 100":
+        janela = 100
+    else:
+        janela = None
+    
+    st.divider()
+    
+    # Estatísticas gerais
+    st.header("📊 Estatísticas")
+    total_rodadas = len(st.session_state.historico)
+    gols = sum(1 for h in st.session_state.historico if h['resultado'] == "✅ Gol")
+    defesas = total_rodadas - gols
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Rodadas", total_rodadas)
+        st.metric("Gols", gols)
+    with col2:
+        st.metric("Defesas", defesas)
+        if total_rodadas > 0:
+            st.metric("Aproveitamento", f"{(gols/total_rodadas)*100:.1f}%")
+        else:
+            st.metric("Aproveitamento", "0%")
 
-col1, col2 = st.columns([2,1])
+# Área principal
+col1, col2 = st.columns([2, 1])
+
 with col1:
-    st.markdown('### Seleção de instrumento e timeframe')
-    instrument = st.selectbox('Instrumento', ['EUR_USD','XAU_USD','GBP_USD','USD_JPY','BTCUSDT','ETHUSDT'])
-    timeframe = st.selectbox('Timeframe', ['M1','M5','M15','H1'])
-    count = st.slider('Quantidade de candles', min_value=200, max_value=3000, value=800, step=100)
+    # Histórico
+    st.header("📝 Histórico")
+    if st.session_state.historico:
+        for i, rodada in enumerate(reversed(st.session_state.historico), 1):
+            st.text(f"{len(st.session_state.historico)-i+1}️⃣ {rodada['direcao']} {rodada['resultado']}")
+    else:
+        st.info("Nenhuma rodada registrada ainda. Comece a jogar!")
 
 with col2:
-    st.markdown('### Credenciais')
-    st.write(f'OANDA: {"OK" if OANDA_TOKEN else "MISSING
+    # Input de resultado
+    st.header("🎯 Registrar")
+    
+    # Selecionar direção primeiro
+    direcao = st.radio(
+        "Direção do chute:",
+        ["⬅️ Esquerda", "⬆️ Centro", "➡️ Direita"],
+        key="direcao_input"
+    )
+    
+    # Botões de resultado
+    col_gol, col_defesa = st.columns(2)
+    with col_gol:
+        if st.button("✅ Gol", type="primary", use_container_width=True):
+            st.session_state.historico.append({
+                "resultado": "✅ Gol",
+                "direcao": direcao,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+            salvar_csv(st.session_state.historico)
+            st.rerun()
+    
+    with col_defesa:
+        if st.button("❌ Defesa", type="secondary", use_container_width=True):
+            st.session_state.historico.append({
+                "resultado": "❌ Defesa",
+                "direcao": direcao,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+            salvar_csv(st.session_state.historico)
+            st.rerun()
+    
+    # Botão desfazer
+    if st.button("↩️ Desfazer última", use_container_width=True):
+        if st.session_state.historico:
+            st.session_state.historico.pop()
+            salvar_csv(st.session_state.historico)
+            st.rerun()
+
+# Análise e sugestão
+st.divider()
+st.header("🤖 Análise da IA")
+
+if st.session_state.historico:
+    # Calcular probabilidades
+    probs = calcular_probabilidades(st.session_state.historico, janela)
+    
+    # Encontrar a direção com maior probabilidade de defesa (para evitar)
+    direcao_evitar = max(probs, key=probs.get)
+    prob_evitar = probs[direcao_evitar]
+    
+    # Sugerir a direção oposta ou com menor probabilidade
+    direcao_sugerir = min(probs, key=probs.get)
+    
+    # Calcular confiança baseada em vários fatores
+    confianca_base = (1 - prob_evitar) * 100
+    
+    # Ajustar confiança baseado no tamanho da amostra
+    fator_amostra = min(len(st.session_state.historico) / 100, 1.0)
+    
+    # Análise avançada
+    analise = analise_avancada(st.session_state.historico)
+    if analise:
+        # Penalizar se há muitas repetições
+        if analise['taxa_repeticoes'] > 0.6:
+            confianca_base *= 0.8
+    
+    confianca_final = confianca_base * (0.5 + 0.5 * fator_amostra)
+    confianca_final = min(confianca_final, 95)  # Máximo 95% de confiança
+    
+    # Exibir probabilidades
+    st.subheader("📈 Probabilidade Atual")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("⬅️ Esquerda", f"{probs['⬅️ Esquerda']*100:.1f}%")
+        st.progress(probs['⬅️ Esquerda'])
+    with col2:
+        st.metric("⬆️ Centro", f"{probs['⬆️ Centro']*100:.1f}%")
+        st.progress(probs['⬆️ Centro'])
+    with col3:
+        st.metric("➡️ Direita", f"{probs['➡️ Direita']*100:.1f}%")
+        st.progress(probs['➡️ Direita'])
+    
+    # Estrelas de confiança
+    estrelas = min(int(confianca_final / 20), 5)
+    st.write(f"{'⭐' * estrelas}{'☆' * (5-estrelas)}")
+    st.metric("Confiança", f"{confianca_final:.1f}%")
+    
+    # Sugestão
+    st.subheader("🎯 Sugestão")
+    if confianca_final > 50:
+        st.success(f"**{direcao_sugerir} - CHUTE AQUI!**")
+    else:
+        st.warning(f"Dados insuficientes para alta confiança. Sugestão: {direcao_sugerir}")
+    
+    # Insights da análise avançada
+    if analise and len(st.session_state.historico) > 10:
+        with st.expander("🔍 Análise Detalhada"):
+            st.write(f"Últimas 3 direções: {' → '.join(analise['ultimas_3'])}")
+            st.write(f"Taxa de repetição: {analise['taxa_repeticoes']*100:.1f}%")
+            st.write(f"Total de repetições: {analise['repeticoes']}")
+            st.write(f"Total de alternâncias: {analise['alternancias']}")
+            
+            if analise['taxa_repeticoes'] > 0.7:
+                st.info("🔔 Alta tendência de repetição detectada!")
+            elif analise['taxa_repeticoes'] < 0.3:
+                st.info("🔄 Alta tendência de alternância detectada!")
+
+else:
+    st.info("Registre algumas rodadas para receber sugestões da IA!")
+
+# Rodapé
+st.divider()
+st.caption(f"Total de rodadas registradas: {len(st.session_state.historico)}")
+if os.path.exists('historico_penaltis.csv'):
+    st.caption("💾 Dados salvos automaticamente em 'historico_penaltis.csv'")

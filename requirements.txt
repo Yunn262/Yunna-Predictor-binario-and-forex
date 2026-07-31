@@ -1,12 +1,2 @@
-pandas
-numpy
-ta
-lightgbm
-oandapyV20
-vectorbt
-scikit-learn
-streamlit
-python-dotenv
-requests
-
-
+streamlit==1.28.0
+pandas==2.0.3
